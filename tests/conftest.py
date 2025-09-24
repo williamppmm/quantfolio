@@ -33,6 +33,8 @@ async def setup_test_db(tmp_path_factory: pytest.TempPathFactory):
 async def clean_database(setup_test_db):
     engine = get_engine()
     async with engine.begin() as conn:
+        # Ensure tables exist in case another test reconfigured the engine
+        await conn.run_sync(Base.metadata.create_all)
         for table in reversed(Base.metadata.sorted_tables):
             await conn.execute(table.delete())
 
