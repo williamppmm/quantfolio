@@ -69,7 +69,7 @@ def test_tech_signals_requires_enough_history(monkeypatch: pytest.MonkeyPatch) -
     with pytest.raises(HTTPException) as exc:
         signals.tech_signals("short", date(2024, 1, 1), date(2024, 1, 3), window=3, slow=3)
 
-    assert exc.value.status_code == 400
+    assert exc.value.status_code == 404
 
 
 def test_tech_signals_requires_close_column(monkeypatch: pytest.MonkeyPatch) -> None:

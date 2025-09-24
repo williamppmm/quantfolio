@@ -1,12 +1,38 @@
-# backend/app/services/market_data.py
-
+import math
 from datetime import date
 from typing import Optional
+
 from fastapi import HTTPException
 import yfinance as yf
 
+
+def _safe_float(value: object) -> Optional[float]:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(result):
+        return None
+    return round(result, 6)
+
+
+def _safe_int(value: object) -> Optional[int]:
+    try:
+        as_float = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(as_float):
+        return None
+    return int(as_float)
+
+
+def _normalize_index(df) -> None:
+    if getattr(df.index, "tz", None) is not None:
+        df.index = df.index.tz_localize(None)
+
+
 def get_last_close(ticker: str) -> dict:
-    """Devuelve el cierre más reciente (ajustado) del ticker."""
+    """Return the latest adjusted close for the given ticker."""
     try:
         df = yf.download(
             tickers=ticker,
@@ -16,68 +42,91 @@ def get_last_close(ticker: str) -> dict:
             progress=False,
             threads=True,
         )
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Error al descargar datos: {e}")
+    except Exception as exc:  # pragma: no cover - upstream failure
+        raise HTTPException(status_code=502, detail=f"Error downloading data: {exc}") from exc
 
     if df is None or df.empty:
-        raise HTTPException(status_code=404, detail=f"No hay datos para el ticker: {ticker}")
+        raise HTTPException(status_code=404, detail=f"No data available for ticker {ticker}")
 
-    df = df.dropna()
+    df = df.dropna(how="all")
     if df.empty:
-        raise HTTPException(status_code=404, detail=f"Sin precios válidos para: {ticker}")
+        raise HTTPException(status_code=404, detail=f"No valid prices for ticker {ticker}")
 
-    # Normaliza índice con zona horaria (si aplica)
-    if getattr(df.index, "tz", None) is not None:
-        df.index = df.index.tz_localize(None)
+    _normalize_index(df)
 
     last_ts = df.index[-1]
     last_row = df.iloc[-1]
+    close_value = _safe_float(last_row.get("Close"))
+    if close_value is None:
+        raise HTTPException(status_code=404, detail=f"No close price for ticker {ticker}")
+
     return {
         "ticker": ticker.upper(),
         "date": last_ts.date().isoformat(),
-        "close": float(round(last_row["Close"], 6)),
+        "close": close_value,
     }
+
 
 def get_history(ticker: str, start: date, end: Optional[date] = None, interval: str = "1d") -> dict:
     if end is not None and start > end:
-        raise HTTPException(status_code=400, detail="start debe ser <= end")
+        raise HTTPException(status_code=422, detail="start must be on or before end")
+
     try:
         df = yf.download(
             tickers=ticker,
             start=start.isoformat(),
             end=None if end is None else end.isoformat(),
-            interval=interval,         # admite: "1d", "1wk", "1mo"
-            auto_adjust=False,          # devueve OHLC sin ajustar
+            interval=interval,
+            auto_adjust=False,
             progress=False,
             threads=True,
         )
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Error al descargar datos: {e}")
+    except Exception as exc:  # pragma: no cover - upstream failure
+        raise HTTPException(status_code=502, detail=f"Error downloading data: {exc}") from exc
 
     if df is None or df.empty:
-        raise HTTPException(status_code=404, detail=f"Sin datos para {ticker} en el rango solicitado")
+        raise HTTPException(status_code=404, detail=f"No data for {ticker} in the requested range")
 
-    df = df.dropna()
-    # Normaliza índice con zona horaria (si aplica)
-    if getattr(df.index, "tz", None) is not None:
-        df.index = df.index.tz_localize(None)
+    df = df.dropna(how="all")
+    if df.empty:
+        raise HTTPException(status_code=404, detail=f"No data for {ticker} in the requested range")
+
+    _normalize_index(df)
+
+    columns = {col.lower(): col for col in df.columns}
+    open_key = columns.get("open")
+    high_key = columns.get("high")
+    low_key = columns.get("low")
+    close_key = columns.get("close") or columns.get("adj close")
+    volume_key = columns.get("volume")
+
+    if close_key is None:
+        raise HTTPException(status_code=500, detail="close column missing from provider response")
 
     records = []
-    cols = df.columns
     for idx, row in df.iterrows():
         item = {"date": idx.date().isoformat()}
-        # Si tenemos OHLC, los enviamos; si no, al menos Close
-        if {"Open", "High", "Low", "Close"}.issubset(cols):
-            item.update({
-                "open": float(round(row["Open"], 6)),
-                "high": float(round(row["High"], 6)),
-                "low":  float(round(row["Low"], 6)),
-                "close": float(round(row["Close"], 6)),
-                "volume": int(row.get("Volume", 0)) if "Volume" in cols and row.get("Volume") == row.get("Volume") else 0,
-            })
+
+        close_value = _safe_float(row.get(close_key))
+        if close_value is None:
+            continue
+
+        item["close"] = close_value
+
+        if open_key and high_key and low_key:
+            item["open"] = _safe_float(row.get(open_key))
+            item["high"] = _safe_float(row.get(high_key))
+            item["low"] = _safe_float(row.get(low_key))
+
+        if volume_key:
+            item["volume"] = _safe_int(row.get(volume_key))
         else:
-            item["close"] = float(row["Close"])
+            item["volume"] = None
+
         records.append(item)
+
+    if not records:
+        raise HTTPException(status_code=404, detail=f"No data for {ticker} in the requested range")
 
     return {
         "ticker": ticker.upper(),

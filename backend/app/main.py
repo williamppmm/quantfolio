@@ -99,6 +99,8 @@ def price_range(
     end: date | None = None,
     interval: str = Query("1d", pattern="^(1d|1wk|1mo)$"),
 ) -> HistoryResponse:
+    if end is not None and start > end:
+        raise HTTPException(status_code=422, detail="start must be on or before end")
     return HistoryResponse(**get_history(ticker, start, end, interval))
 
 
@@ -109,6 +111,8 @@ def metrics_basic(
     end: date | None = None,
     rf: float = 0.0,
 ) -> BasicMetricsResponse:
+    if end is not None and start > end:
+        raise HTTPException(status_code=422, detail="start must be on or before end")
     return BasicMetricsResponse(**basic_metrics(ticker, start, end, rf))
 
 
@@ -120,6 +124,8 @@ def metrics_advanced(
     rf: float = 0.0,
     mar: float = 0.0,
 ) -> AdvancedMetricsResponse:
+    if end is not None and start > end:
+        raise HTTPException(status_code=422, detail="start must be on or before end")
     return AdvancedMetricsResponse(**advanced_metrics(ticker, start, end, rf, mar))
 
 
@@ -137,6 +143,8 @@ def signals_tech(
     slow: int = 50,
     rsi_period: int = 14,
 ) -> TechSignalsResponse:
+    if end is not None and start > end:
+        raise HTTPException(status_code=422, detail="start must be on or before end")
     return TechSignalsResponse(
         **tech_signals(ticker, start, end, window, fast, slow, rsi_period)
     )
@@ -149,6 +157,8 @@ async def ingest_prices(
     end: date | None = None,
     interval: str = Query("1d", pattern="^(1d|1wk|1mo)$"),
 ) -> dict:
+    if end is not None and start > end:
+        raise HTTPException(status_code=422, detail="start must be on or before end")
     payload = get_history(ticker, start, end, interval)
     rows = payload.get("data", [])
     if not rows:
@@ -180,6 +190,8 @@ async def db_price_range(
     limit: int = Query(200, ge=1, le=1000),
     offset: int = Query(0, ge=0),
 ) -> HistoryResponse:
+    if end is not None and start > end:
+        raise HTTPException(status_code=422, detail="start must be on or before end")
     async with session_scope() as session:
         total = await crud_prices.count_prices_range(session, ticker, start, end)
         rows = await crud_prices.read_prices_range_paged(session, ticker, start, end, limit=limit, offset=offset)
@@ -230,68 +242,73 @@ async def db_last_price(ticker: str) -> LastDbPriceResponse:
         volume=record.volume,
     )
 
-# 1) Leer la última fecha guardada en DB
-@app.post("/ingest/{ticker}/latest", summary="Ingest missing days from last stored date to today")
-def ingest_latest(
+
+@app.post(
+    "/ingest/{ticker}/latest",
+    summary="Ingest missing days from last stored date to today",
+)
+async def ingest_latest(
     ticker: str,
     interval: str = Query("1d", pattern="^(1d|1wk|1mo)$"),
-):
-    # 1) Leer la última fecha guardada en DB
-    last = read_prices_last(ticker.upper())
-    if last is None:
-        # No hay datos en DB: pedirle al usuario que haga una ingesta inicial por rango
-        return {
-            "ticker": ticker.upper(),
-            "interval": interval,
-            "start": None,
-            "end": None,
-            "ingested": 0,
-            "upsert_effect": 0,
-            "status": "empty_db_use_range_ingest"
-        }
+) -> dict:
+    normalized = ticker.upper()
+    today = date.today()
 
-    start = last["date"] + timedelta(days=1)
-    end = date.today()
+    async with session_scope() as session:
+        last_date = await crud_prices.get_last_date(session, normalized)
+        if last_date is None:
+            await session.rollback()
+            raise HTTPException(
+                status_code=404,
+                detail="Ticker has no stored prices. Ingest a range first.",
+            )
 
-    # Si start > end, ya está al día
-    if start > end:
-        return {
-            "ticker": ticker.upper(),
+        start = last_date + timedelta(days=1)
+        if start > today:
+            await session.rollback()
+            return {
+                "ticker": normalized,
+                "interval": interval,
+                "start": start.isoformat(),
+                "end": today.isoformat(),
+                "ingested": 0,
+                "upsert_effect": 0,
+                "status": "up_to_date",
+            }
+
+        payload = get_history(normalized, start, today, interval)
+        if payload["count"] == 0 or not payload.get("data"):
+            await session.rollback()
+            return {
+                "ticker": normalized,
+                "interval": interval,
+                "start": start.isoformat(),
+                "end": today.isoformat(),
+                "ingested": 0,
+                "upsert_effect": 0,
+                "status": "no_new_rows",
+            }
+
+        await session.rollback()
+        async with session.begin():
+            effect = await crud_prices.upsert_prices(
+                session,
+                normalized,
+                payload["data"],
+            )
+
+        response = {
+            "ticker": normalized,
             "interval": interval,
             "start": start.isoformat(),
-            "end": end.isoformat(),
-            "ingested": 0,
-            "upsert_effect": 0,
-            "status": "up_to_date"
+            "end": today.isoformat(),
+            "ingested": payload["count"],
+            "upsert_effect": effect,
+            "status": "ok",
         }
 
-    # 2) Descargar desde el proveedor
-    payload = get_history(ticker, start, end, interval)
+    return response
 
-    # 3) Si no hay filas nuevas, responder 200 con ingested=0
-    if payload["count"] == 0 or not payload["data"]:
-        return {
-            "ticker": ticker.upper(),
-            "interval": interval,
-            "start": start.isoformat(),
-            "end": end.isoformat(),
-            "ingested": 0,
-            "upsert_effect": 0,
-            "status": "no_new_rows"
-        }
-
-    # 4) UPSERT a DB
-    effect = upsert_prices(ticker.upper(), payload["data"])
-
-    return {
-        "ticker": ticker.upper(),
-        "interval": interval,
-        "start": start.isoformat(),
-        "end": end.isoformat(),
-        "ingested": payload["count"],
-        "upsert_effect": effect,
-        "status": "ok"
-    }
 
 @app.post(
     "/portfolios",
@@ -470,7 +487,7 @@ async def portfolio_metrics(
     mar: float = Query(0.0),
 ) -> PortfolioMetricsResponse:
     if start > end:
-        raise HTTPException(status_code=400, detail="from must be on or before to")
+        raise HTTPException(status_code=422, detail="from must be on or before to")
     async with session_scope() as session:
         try:
             await crud_portfolios.get_portfolio(session, portfolio_id)

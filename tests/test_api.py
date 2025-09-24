@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
+from sqlalchemy import select
 
 from backend.app.db.models import Price
 
@@ -90,3 +91,68 @@ async def test_health_and_portfolio_flow(client, db_session):
 
     delete_portfolio_resp = await client.delete(f"/portfolios/{portfolio_id}")
     assert delete_portfolio_resp.status_code == 204
+
+@pytest.mark.asyncio
+async def test_ingest_latest_flow(client, db_session, monkeypatch):
+    response = await client.post("/ingest/VOO/latest")
+    assert response.status_code == 404
+
+    today = date.today()
+    last_date = today - timedelta(days=2)
+
+    async with db_session.begin():
+        db_session.add(
+            Price(
+                id=1,
+                ticker="VOO",
+                date=last_date,
+                open=100.0,
+                high=101.0,
+                low=99.5,
+                close=100.5,
+                volume=1000,
+            )
+        )
+
+    def fake_get_history(ticker: str, start: date, end: date, interval: str) -> dict:
+        assert start == last_date + timedelta(days=1)
+        assert end == today
+        return {
+            "ticker": ticker.upper(),
+            "interval": interval,
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "count": 1,
+            "data": [
+                {
+                    "date": start.isoformat(),
+                    "open": 101.0,
+                    "high": 102.0,
+                    "low": 100.0,
+                    "close": 101.5,
+                    "volume": 1500,
+                }
+            ],
+        }
+
+    monkeypatch.setattr("backend.app.main.get_history", fake_get_history)
+
+    response_ok = await client.post("/ingest/VOO/latest")
+    assert response_ok.status_code == 200, response_ok.json()
+    payload = response_ok.json()
+    assert payload["status"] == "ok"
+    assert payload["ingested"] == 1
+    assert payload["upsert_effect"] == 1
+    assert payload["start"] == (last_date + timedelta(days=1)).isoformat()
+    assert payload["end"] == today.isoformat()
+
+    async with db_session.begin():
+        result = await db_session.execute(
+            select(Price).where(Price.ticker == "VOO").order_by(Price.date)
+        )
+        rows = result.scalars().all()
+
+    assert len(rows) == 2
+    assert rows[-1].date == last_date + timedelta(days=1)
+    assert float(rows[-1].close) == pytest.approx(101.5)
+

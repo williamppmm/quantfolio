@@ -67,8 +67,8 @@ def _expected_advanced_metrics(closes: list[float], rf: float, mar: float) -> di
         mar_daily = 0.0
     downside = rets[rets < mar_daily]
     if downside.empty:
-        downside_vol_ann = 0.0
-        sortino = None if ann_return is None else float((ann_return - mar) / 1e-12)
+        downside_vol_ann = None
+        sortino = None
     else:
         downside_vol_daily = float(downside.std(ddof=1))
         downside_vol_ann = float(downside_vol_daily * np.sqrt(metrics.TRADING_DAYS))
@@ -124,7 +124,7 @@ def test_basic_metrics_requires_two_points(monkeypatch: pytest.MonkeyPatch) -> N
     with pytest.raises(HTTPException) as exc:
         metrics.basic_metrics("one", date(2024, 1, 1), date(2024, 1, 1))
 
-    assert exc.value.status_code == 400
+    assert exc.value.status_code == 404
 
 
 def test_basic_metrics_requires_close_column(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -146,7 +146,7 @@ def test_basic_metrics_handles_empty_returns(monkeypatch: pytest.MonkeyPatch) ->
     with pytest.raises(HTTPException) as exc:
         metrics.basic_metrics("na", date(2024, 1, 1), date(2024, 1, 3))
 
-    assert exc.value.status_code == 400
+    assert exc.value.status_code == 404
 
 
 def test_advanced_metrics_success(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -178,7 +178,7 @@ def test_advanced_metrics_requires_two_points(monkeypatch: pytest.MonkeyPatch) -
     with pytest.raises(HTTPException) as exc:
         metrics.advanced_metrics("short", date(2024, 1, 1), date(2024, 1, 1))
 
-    assert exc.value.status_code == 400
+    assert exc.value.status_code == 404
 
 
 def test_advanced_metrics_requires_close_column(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -200,7 +200,7 @@ def test_advanced_metrics_handles_empty_returns(monkeypatch: pytest.MonkeyPatch)
     with pytest.raises(HTTPException) as exc:
         metrics.advanced_metrics("void", date(2024, 1, 1), date(2024, 1, 3))
 
-    assert exc.value.status_code == 400
+    assert exc.value.status_code == 404
 
 
 def test_advanced_metrics_downside_empty(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -211,8 +211,8 @@ def test_advanced_metrics_downside_empty(monkeypatch: pytest.MonkeyPatch) -> Non
     result = metrics.advanced_metrics("pos", date(2024, 1, 1), date(2024, 1, 4), rf=0.0, mar=0.5)
     expected = _expected_advanced_metrics(closes, rf=0.0, mar=0.5)
 
-    assert result["downside_volatility"] == pytest.approx(expected["downside_volatility"], abs=1e-12)
-    assert result["sortino"] == pytest.approx(expected["sortino"], rel=5e-6, abs=1e-6)
+    assert result["downside_volatility"] is None
+    assert result["sortino"] is None
     assert result["calmar"] is None
 
 

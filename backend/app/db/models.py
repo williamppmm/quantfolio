@@ -7,6 +7,7 @@ from decimal import Decimal
 
 from sqlalchemy import (
     BigInteger,
+    Integer,
     CheckConstraint,
     Date,
     DateTime,
@@ -26,7 +27,7 @@ from .base import Base
 class Price(Base):
     __tablename__ = "prices"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     ticker: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
     date: Mapped[date] = mapped_column(Date, nullable=False)
     open: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))

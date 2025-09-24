@@ -1,0 +1,30 @@
+version: "3.9"
+services:
+  db:
+    image: postgres:16
+    container_name: quantfolio-postgres
+    environment:
+      POSTGRES_USER: quant
+      POSTGRES_PASSWORD: quant
+      POSTGRES_DB: quantfolio
+    ports:
+      - "5432:5432"
+    volumes:
+      - quantfolio_pgdata:/var/lib/postgresql/data
+
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: quantfolio-api
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://quant:quant@db:5432/quantfolio"
+      LOG_LEVEL: "INFO"
+      ALLOWED_ORIGINS: "http://localhost:5173,http://127.0.0.1:5173"
+    depends_on:
+      - db
+    ports:
+      - "8000:8000"
+
+volumes:
+  quantfolio_pgdata:

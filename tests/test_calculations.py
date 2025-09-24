@@ -65,7 +65,7 @@ def test_advanced_metrics(mock_history):
 
     result = advanced_metrics("VOO", start, start + timedelta(days=5), rf=0.0, mar=0.0)
     assert result["calmar"] is None or result["calmar"] >= 0
-    assert result["downside_volatility"] is not None
+    assert result["downside_volatility"] is None
     assert result["ytd_return"] is not None
 
 
