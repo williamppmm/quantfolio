@@ -1,9 +1,10 @@
-from datetime import date
+﻿from datetime import date
+import uuid
 
 import pytest
 
 from backend.app.db import crud_portfolios, crud_transactions
-from backend.app.db.errors import PortfolioAlreadyExistsError, InvalidTransactionError
+from backend.app.db.errors import PortfolioAlreadyExistsError, PortfolioNotFoundError, InvalidTransactionError
 from backend.app.db.models import TransactionType
 
 
@@ -130,3 +131,64 @@ async def test_list_and_delete_transactions(db_session):
 
 
 
+
+@pytest.mark.asyncio
+async def test_create_portfolio_invalid_name(db_session):
+    with pytest.raises(ValueError):
+        async with db_session.begin():
+            await crud_portfolios.create_portfolio(db_session, name="   ")
+
+
+@pytest.mark.asyncio
+async def test_get_portfolio_not_found(db_session):
+    with pytest.raises(PortfolioNotFoundError):
+        await crud_portfolios.get_portfolio(db_session, uuid.uuid4())
+
+
+@pytest.mark.asyncio
+async def test_portfolio_listing_with_filters(db_session):
+    tx_date = date(2024, 2, 1)
+    async with db_session.begin():
+        portfolio = await crud_portfolios.create_portfolio(db_session, name="Coverage")
+        await crud_transactions.create_transaction(
+            db_session,
+            portfolio=portfolio,
+            ticker="VOO",
+            tx_type=TransactionType.BUY,
+            tx_date=tx_date,
+            quantity=1,
+            price=100,
+            amount=None,
+        )
+
+    total = await crud_portfolios.count_portfolios(db_session)
+    assert total == 1
+
+    items = await crud_portfolios.list_portfolios(db_session, with_transactions=True)
+    assert len(items) == 1
+    assert len(items[0].transactions) == 1
+
+    filtered_count = await crud_transactions.count_transactions(
+        db_session,
+        portfolio_id=portfolio.id,
+        start=tx_date,
+        end=tx_date,
+        ticker="VOO",
+    )
+    assert filtered_count == 1
+
+    filtered_transactions = await crud_transactions.list_transactions(
+        db_session,
+        portfolio_id=portfolio.id,
+        start=tx_date,
+        end=tx_date,
+        ticker="VOO",
+    )
+    assert len(filtered_transactions) == 1
+
+    await db_session.rollback()
+
+    async with db_session.begin():
+        await crud_portfolios.delete_portfolio(db_session, portfolio_id=portfolio.id)
+
+    assert await crud_portfolios.count_portfolios(db_session) == 0

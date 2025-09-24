@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import uuid
 from typing import Sequence
@@ -26,6 +26,7 @@ async def create_portfolio(session: AsyncSession, *, name: str) -> Portfolio:
         raise PortfolioAlreadyExistsError(normalized) from exc
 
     await session.refresh(portfolio)
+    session.expunge(portfolio)
     return portfolio
 
 

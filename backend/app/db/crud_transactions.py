@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import uuid
 from datetime import date
@@ -109,6 +109,7 @@ async def create_transaction(
         raise InvalidTransactionError("Transaction violates database constraints") from exc
 
     await session.refresh(transaction)
+    session.expunge(transaction)
     return transaction
 
 
